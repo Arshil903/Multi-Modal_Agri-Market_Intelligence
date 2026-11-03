@@ -246,9 +246,11 @@ def predict_lstm_regressor(
 
 
 def load_bilstm_regressor(path: Path) -> tuple[BiLSTMRegressor, StandardScaler]:
+    # PyTorch 2.6+ compatibility: explicitly set weights_only=False to allow loading StandardScaler
     try:
         checkpoint = torch.load(path, map_location=get_device(), weights_only=False)
     except TypeError:
+        # Fallback for older PyTorch versions that don't support weights_only parameter
         checkpoint = torch.load(path, map_location=get_device())
     model = BiLSTMRegressor(
         input_size=int(checkpoint["input_size"]),
