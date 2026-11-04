@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timedelta
 
 import joblib
 import numpy as np
@@ -607,6 +607,311 @@ def tab_live_predictor():
                         for k, v in predictions.items()
                     ])
                     st.dataframe(model_df, use_container_width=True, hide_index=True)
+                
+                # ============================================================
+                # DYNAMIC VISUALIZATIONS (based on user inputs)
+                # ============================================================
+                
+                st.markdown("---")
+                st.subheader("📈 Dynamic Analysis & Insights")
+                
+                # Graph 1: Price Forecast Comparison (Bar Chart)
+                st.markdown("#### 1️⃣ Price Forecast Comparison")
+                
+                fig1 = go.Figure()
+                
+                # Add current price as baseline
+                fig1.add_trace(go.Bar(
+                    x=['Current Price'],
+                    y=[modal_price],
+                    name='Current',
+                    marker_color='gray',
+                    text=[f'₹{modal_price:.0f}'],
+                    textposition='outside',
+                    width=0.4
+                ))
+                
+                # Add model predictions
+                model_colors = {'XGBoost': '#FF6B6B', 'BiLSTM': '#4ECDC4', 'Ridge': '#45B7D1'}
+                for model_name, pred_value in predictions.items():
+                    color = model_colors.get(model_name, '#95E1D3')
+                    change_pct = ((pred_value - modal_price) / modal_price) * 100
+                    
+                    fig1.add_trace(go.Bar(
+                        x=[model_name],
+                        y=[pred_value],
+                        name=model_name,
+                        marker_color=color,
+                        text=[f'₹{pred_value:.0f}<br>({change_pct:+.1f}%)'],
+                        textposition='outside',
+                        width=0.4
+                    ))
+                
+                fig1.update_layout(
+                    height=400,
+                    xaxis_title="",
+                    yaxis_title="Price (₹/quintal)",
+                    showlegend=False,
+                    hovermode='x unified',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                )
+                
+                st.plotly_chart(fig1, use_container_width=True)
+                
+                # Graph 2: Feature Impact Gauge Chart
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("#### 2️⃣ Sentiment Impact")
+                    
+                    # Sentiment gauge
+                    fig2 = go.Figure(go.Indicator(
+                        mode="gauge+number+delta",
+                        value=vader_score,
+                        domain={'x': [0, 1], 'y': [0, 1]},
+                        title={'text': "News Sentiment Score", 'font': {'size': 16}},
+                        delta={'reference': 0, 'increasing': {'color': "green"}, 'decreasing': {'color': "red"}},
+                        gauge={
+                            'axis': {'range': [-1, 1], 'tickwidth': 1, 'tickcolor': "darkgray"},
+                            'bar': {'color': "darkblue"},
+                            'bgcolor': "white",
+                            'borderwidth': 2,
+                            'bordercolor': "gray",
+                            'steps': [
+                                {'range': [-1, -0.25], 'color': '#FFE5E5'},
+                                {'range': [-0.25, 0.25], 'color': '#FFF9E5'},
+                                {'range': [0.25, 1], 'color': '#E5FFE5'}
+                            ],
+                            'threshold': {
+                                'line': {'color': "red", 'width': 4},
+                                'thickness': 0.75,
+                                'value': -0.25
+                            }
+                        }
+                    ))
+                    
+                    fig2.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
+                    st.plotly_chart(fig2, use_container_width=True)
+                    
+                    if vader_score < -0.25:
+                        st.caption("🔴 **Negative sentiment detected** - Contributing to shock signal")
+                    elif vader_score > 0.25:
+                        st.caption("🟢 **Positive sentiment** - Market stability indicated")
+                    else:
+                        st.caption("🟡 **Neutral sentiment** - No strong directional signal")
+                
+                with col2:
+                    st.markdown("#### 3️⃣ Weather Risk Assessment")
+                    
+                    # Weather gauge
+                    weather_risk = 0.0
+                    if rainfall > 15:
+                        weather_risk += 0.5
+                    if max_temp > 42:
+                        weather_risk += 0.3
+                    if max_temp < 20:
+                        weather_risk += 0.2
+                    weather_risk = min(weather_risk, 1.0)
+                    
+                    fig3 = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=weather_risk * 100,
+                        domain={'x': [0, 1], 'y': [0, 1]},
+                        title={'text': "Weather Risk Score", 'font': {'size': 16}},
+                        number={'suffix': '%'},
+                        gauge={
+                            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkgray"},
+                            'bar': {'color': "orange"},
+                            'bgcolor': "white",
+                            'borderwidth': 2,
+                            'bordercolor': "gray",
+                            'steps': [
+                                {'range': [0, 33], 'color': '#E5FFE5'},
+                                {'range': [33, 66], 'color': '#FFF9E5'},
+                                {'range': [66, 100], 'color': '#FFE5E5'}
+                            ],
+                        }
+                    ))
+                    
+                    fig3.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
+                    st.plotly_chart(fig3, use_container_width=True)
+                    
+                    if weather_risk > 0.5:
+                        st.caption(f"🔴 **High risk**: Rainfall={rainfall:.1f}mm, Temp={max_temp:.1f}°C")
+                    elif weather_risk > 0.2:
+                        st.caption(f"🟡 **Moderate risk**: Weather conditions monitored")
+                    else:
+                        st.caption(f"🟢 **Low risk**: Normal weather conditions")
+                
+                # Graph 3: Price Trajectory Simulation (7-day forward projection)
+                st.markdown("#### 4️⃣ Simulated Price Trajectory (Next 7 Days)")
+                
+                # Create a simple 7-day projection based on current forecast
+                days = list(range(0, 8))
+                dates_proj = [(target_date + timedelta(days=i)).strftime('%b %d') for i in days]
+                
+                # Start with current price, project using forecast trend
+                daily_change_rate = (forecast_price - modal_price) / modal_price / 1  # 1 day rate
+                
+                # Simulate different scenarios
+                optimistic = [modal_price]
+                realistic = [modal_price]
+                pessimistic = [modal_price]
+                
+                for i in range(1, 8):
+                    # Realistic: follow forecast trend
+                    realistic.append(realistic[-1] * (1 + daily_change_rate))
+                    
+                    # Optimistic: 75% of the change
+                    optimistic.append(optimistic[-1] * (1 + daily_change_rate * 0.75))
+                    
+                    # Pessimistic: 125% of the change (if shock detected)
+                    if is_shock:
+                        pessimistic.append(pessimistic[-1] * (1 + daily_change_rate * 1.25))
+                    else:
+                        pessimistic.append(pessimistic[-1] * (1 + daily_change_rate * 1.1))
+                
+                fig4 = go.Figure()
+                
+                # Add scenarios
+                fig4.add_trace(go.Scatter(
+                    x=dates_proj, y=optimistic,
+                    mode='lines+markers',
+                    name='Optimistic',
+                    line=dict(color='#00D9FF', width=2, dash='dot'),
+                    marker=dict(size=6)
+                ))
+                
+                fig4.add_trace(go.Scatter(
+                    x=dates_proj, y=realistic,
+                    mode='lines+markers',
+                    name='Most Likely (Model Forecast)',
+                    line=dict(color='#4ECDC4', width=3),
+                    marker=dict(size=8, symbol='diamond')
+                ))
+                
+                fig4.add_trace(go.Scatter(
+                    x=dates_proj, y=pessimistic,
+                    mode='lines+markers',
+                    name='Pessimistic (Shock Scenario)' if is_shock else 'Pessimistic',
+                    line=dict(color='#FF6B6B', width=2, dash='dash'),
+                    marker=dict(size=6)
+                ))
+                
+                # Add current price reference line
+                fig4.add_hline(y=modal_price, line_dash="dot", 
+                              line_color="gray", 
+                              annotation_text=f"Current: ₹{modal_price:.0f}",
+                              annotation_position="right")
+                
+                fig4.update_layout(
+                    height=400,
+                    xaxis_title="Date",
+                    yaxis_title="Projected Price (₹/quintal)",
+                    hovermode='x unified',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                )
+                
+                st.plotly_chart(fig4, use_container_width=True)
+                
+                st.caption("📌 **Note:** Projections are simulated based on current model forecast and do not account for future events.")
+                
+                # Graph 4: Feature Contribution Breakdown (Radar Chart)
+                st.markdown("#### 5️⃣ Feature Contribution Analysis")
+                
+                # Normalize features for radar chart
+                features_normalized = {
+                    'Price Lag<br>(Recent History)': min(abs(features['Price_Lag_1'].values[0] - modal_price) / modal_price * 10, 1.0),
+                    'Volatility<br>(7-Day Std)': min(features['Price_Roll_Std_7'].values[0] / modal_price * 5, 1.0),
+                    'Sentiment<br>(News + Weather)': abs(vader_score),
+                    'Weather<br>(Rainfall)': min(rainfall / 50, 1.0),
+                    'Intraday<br>Spread': min((max_price - min_price) / modal_price * 5, 1.0),
+                }
+                
+                categories = list(features_normalized.keys())
+                values = list(features_normalized.values())
+                
+                fig5 = go.Figure()
+                
+                fig5.add_trace(go.Scatterpolar(
+                    r=values + [values[0]],  # Close the loop
+                    theta=categories + [categories[0]],
+                    fill='toself',
+                    name='Feature Impact',
+                    fillcolor='rgba(78, 205, 196, 0.3)',
+                    line=dict(color='#4ECDC4', width=2)
+                ))
+                
+                fig5.update_layout(
+                    polar=dict(
+                        radialaxis=dict(
+                            visible=True,
+                            range=[0, 1],
+                            tickvals=[0, 0.25, 0.5, 0.75, 1.0],
+                            ticktext=['0%', '25%', '50%', '75%', '100%']
+                        )
+                    ),
+                    showlegend=False,
+                    height=450,
+                )
+                
+                st.plotly_chart(fig5, use_container_width=True)
+                
+                st.caption("📊 **Interpretation:** Larger area = Greater feature influence on prediction")
+                
+                # Summary Insights
+                st.markdown("---")
+                st.subheader("💡 Key Insights from Your Inputs")
+                
+                insights = []
+                
+                # Price trend insight
+                if price_change_pct > 10:
+                    insights.append(f"🔴 **Significant price surge predicted** (+{price_change_pct:.1f}%) - Consider supply-side interventions")
+                elif price_change_pct > 5:
+                    insights.append(f"🟡 **Moderate upward pressure** (+{price_change_pct:.1f}%) - Monitor market closely")
+                elif price_change_pct < -5:
+                    insights.append(f"🔵 **Price decline expected** ({price_change_pct:.1f}%) - Good for consumers")
+                else:
+                    insights.append(f"🟢 **Stable price dynamics** ({price_change_pct:+.1f}%) - Market equilibrium")
+                
+                # Sentiment insight
+                if vader_score < -0.5:
+                    insights.append("📰 **Very negative news sentiment** - Media reports indicating supply disruption")
+                elif vader_score > 0.5:
+                    insights.append("📰 **Positive news sentiment** - Favorable market conditions reported")
+                
+                # Weather insight
+                if rainfall > 25:
+                    insights.append(f"🌧️ **Heavy rainfall alert** ({rainfall:.1f}mm) - Risk of crop damage and transport delays")
+                elif rainfall > 15:
+                    insights.append(f"🌦️ **Unseasonal rain detected** ({rainfall:.1f}mm) - May impact supply")
+                
+                if max_temp > 42:
+                    insights.append(f"🌡️ **Heatwave conditions** ({max_temp:.1f}°C) - Crop stress and storage concerns")
+                
+                # Model agreement insight
+                if len(predictions) >= 2:
+                    pred_values = list(predictions.values())
+                    spread = max(pred_values) - min(pred_values)
+                    spread_pct = (spread / modal_price) * 100
+                    
+                    if spread_pct < 3:
+                        insights.append(f"🤝 **High model consensus** (spread: ₹{spread:.0f}) - Confident prediction")
+                    else:
+                        insights.append(f"⚠️ **Model divergence detected** (spread: ₹{spread:.0f}) - Uncertain conditions")
+                
+                # Shock probability insight
+                if shock_probability >= 0.75:
+                    insights.append(f"🚨 **Critical shock probability** ({shock_probability*100:.0f}%) - Immediate policy attention needed")
+                elif shock_probability >= 0.50:
+                    insights.append(f"⚠️ **Elevated shock risk** ({shock_probability*100:.0f}%) - Enhanced monitoring recommended")
+                
+                for insight in insights:
+                    st.markdown(f"- {insight}")
                 
             except Exception as e:
                 st.error(f"❌ Prediction error: {e}")
