@@ -201,6 +201,100 @@ def _shock_figure(history: pd.DataFrame, preds: pd.DataFrame | None, crop: str) 
     return fig
 
 
+def estimate_backend_parameters_from_trend(
+    crop_hist: pd.DataFrame,
+    crop: str,
+    target_date: datetime,
+    news_headline: str,
+) -> dict:
+    """
+    Infers market, weather, and supply parameters in the backend based on:
+    1. Historical seasonal trends for the crop & date in Gujarat mandis (2023-2025).
+    2. Contextual shocks extracted from the news headline (downpour, cyclone, strikes, shortages).
+    """
+    t_date = pd.to_datetime(target_date)
+    doy = t_date.dayofyear
+    
+    # 1. Check if exact date exists in historical record
+    exact = crop_hist[crop_hist['Date'].dt.date == t_date.date()]
+    if not exact.empty:
+        row = exact.iloc[0]
+        modal_price = float(row['Modal_Price'])
+        min_price = float(row['Min_Price'])
+        max_price = float(row['Max_Price'])
+        max_temp = float(row['Max_Temp_C'])
+        rainfall = float(row['Rainfall_mm'])
+        active_mandis = int(row['Active_Mandis_Reporting']) if not pd.isna(row['Active_Mandis_Reporting']) else 12
+        date_str = t_date.strftime('%Y-%m-%d')
+        source_desc = f"Exact historical record on {date_str}"
+    else:
+        # 2. Derive from seasonal window (+/- 15 days of day-of-year across historical years)
+        hist_doy = crop_hist['Date'].dt.dayofyear
+        window = crop_hist[hist_doy.between(doy - 15, doy + 15)]
+        
+        # If near year boundary (Dec 25 - Jan 10) or small sample, wrap around or use month
+        if len(window) < 5:
+            doy_min = (doy - 15) % 365
+            doy_max = (doy + 15) % 365
+            if doy_min > doy_max:
+                window = crop_hist[(hist_doy >= doy_min) | (hist_doy <= doy_max)]
+            else:
+                window = crop_hist[hist_doy.between(doy_min, doy_max)]
+                
+        if len(window) < 5:
+            window = crop_hist[crop_hist['Date'].dt.month == t_date.month]
+            
+        if window.empty:
+            window = crop_hist
+            
+        modal_price = float(window['Modal_Price'].median())
+        min_price = float(window['Min_Price'].median())
+        max_price = float(window['Max_Price'].median())
+        max_temp = float(window['Max_Temp_C'].mean())
+        rainfall = float(window['Rainfall_mm'].mean())
+        active_mandis = int(round(window['Active_Mandis_Reporting'].mean()))
+        doy_start = max(1, doy - 15)
+        doy_end = min(365, doy + 15)
+        source_desc = f"Seasonal trend window (Day {doy_start}–{doy_end}) from 2023–2025 Gujarat mandis"
+
+    # Ensure price consistency
+    if min_price >= modal_price:
+        min_price = modal_price * 0.92
+    if max_price <= modal_price:
+        max_price = modal_price * 1.08
+    if active_mandis < 1:
+        active_mandis = 5 if crop == "Tomato" else 12
+
+    # Contextual adjustments from news headline
+    hl_lower = news_headline.lower()
+    rain_keywords = ['downpour', 'flood', 'heavy rain', 'unseasonal rain', 'storm', 'cyclone', 'excessive rainfall', 'waterlogging']
+    heat_keywords = ['heatwave', 'extreme heat', 'scorching temperature', 'severe heat']
+    
+    if any(k in hl_lower for k in rain_keywords):
+        rainfall = max(rainfall, 28.0)
+    elif any(k in hl_lower for k in heat_keywords):
+        max_temp = max(max_temp, 43.0)
+        
+    # Arrival volume: estimated based on active mandis & headline disruptions
+    base_arrival = active_mandis * 32.0
+    supply_disrupt_keywords = ['damage', 'shortage', 'strike', 'blockade', 'downpour', 'flood', 'destroyed', 'deficit']
+    if any(k in hl_lower for k in supply_disrupt_keywords):
+        arrival_volume = max(base_arrival * 0.65, 120.0)
+    else:
+        arrival_volume = max(base_arrival, 200.0)
+
+    return {
+        'modal_price': round(modal_price, 1),
+        'min_price': round(min_price, 1),
+        'max_price': round(max_price, 1),
+        'max_temp': round(max_temp, 1),
+        'rainfall': round(rainfall, 1),
+        'active_mandis': active_mandis,
+        'arrival_volume': round(arrival_volume, 1),
+        'source_desc': source_desc,
+    }
+
+
 def construct_feature_vector(
     crop_history: pd.DataFrame,
     modal_price: float,
@@ -374,42 +468,34 @@ def tab_live_predictor():
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("**🌾 Crop & Date Selection**")
+            st.markdown("**🌾 Crop Selection**")
             crop = st.selectbox("Select Crop", COMMODITIES, index=0, key="live_crop")
             
-            # Allow dates up to 2026
+        with col2:
+            st.markdown("**📅 Prediction Date**")
+            # Default to 2026/11/20 (or any date)
             target_date = st.date_input(
                 "Prediction Date",
-                value=datetime(2026, 3, 15),
+                value=datetime(2026, 11, 20),
                 min_value=datetime(2023, 6, 1),
-                max_value=datetime(2026, 12, 31)
+                max_value=datetime(2026, 12, 31),
+                help="Select date to forecast (market & weather trends are computed automatically)"
             )
-            
-            st.markdown("**💰 Market Parameters**")
-            modal_price = st.number_input("Recent Modal Price (₹/Quintal)", value=2100.0, min_value=100.0, max_value=10000.0, step=50.0)
-            min_price = st.number_input("Min Price (₹/Quintal)", value=1950.0, min_value=100.0, max_value=10000.0, step=50.0)
-            max_price = st.number_input("Max Price (₹/Quintal)", value=2250.0, min_value=100.0, max_value=10000.0, step=50.0)
-            
-        with col2:
-            st.markdown("**📦 Supply Parameters**")
-            arrival_volume = st.number_input("Mandi Arrival Volume (Tonnes)", value=450.0, min_value=0.0, max_value=5000.0, step=10.0)
-            active_mandis = st.number_input("Active Mandis Reporting", value=15, min_value=1, max_value=100, step=1)
-            
-            st.markdown("**🌤️ Weather Conditions**")
-            max_temp = st.number_input("Today's Max Temperature (°C)", value=36.0, min_value=10.0, max_value=50.0, step=0.5)
-            rainfall = st.number_input("Rainfall in past 24 hrs (mm)", value=0.0, min_value=0.0, max_value=200.0, step=1.0)
         
         st.markdown("**📰 News Headline Input**")
         news_headline = st.text_area(
             "Enter today's agriculture news headline",
             value="Heavy unseasonal downpour damages standing onion crops in Gujarat mandis",
-            height=100
+            height=90,
+            help="Simulate news events (e.g. rain downpour, strikes, normal trade) to evaluate AI price response."
         )
+        
+        st.info("💡 **Backend Trend Automation**: Market prices, mandi supply arrivals, and weather parameters are automatically calculated in the backend as per seasonal trends for the selected date & crop, combined with contextual news signals.")
         
         submit = st.form_submit_button("🚀 Run Multimodal AI Prediction", use_container_width=True)
     
     if submit:
-        with st.spinner("Loading models and computing predictions..."):
+        with st.spinner("Analyzing historical trends, loading multimodal AI models, and predicting..."):
             # Load models for the selected crop
             models = load_models_for_commodity(crop)
             
@@ -423,6 +509,23 @@ def tab_live_predictor():
             if crop_hist.empty:
                 st.error(f"⚠️ No historical data found for {crop}")
                 return
+            
+            # Compute backend parameters as per historical seasonal trends & news context
+            backend_params = estimate_backend_parameters_from_trend(
+                crop_hist=crop_hist,
+                crop=crop,
+                target_date=target_date,
+                news_headline=news_headline,
+            )
+            
+            modal_price = backend_params['modal_price']
+            min_price = backend_params['min_price']
+            max_price = backend_params['max_price']
+            arrival_volume = backend_params['arrival_volume']
+            active_mandis = backend_params['active_mandis']
+            max_temp = backend_params['max_temp']
+            rainfall = backend_params['rainfall']
+            source_desc = backend_params['source_desc']
             
             # Construct feature vector
             try:
@@ -566,6 +669,29 @@ def tab_live_predictor():
                 
                 # Display results
                 st.markdown("---")
+                
+                # Backend Inferred Trend Parameters Section
+                with st.expander("⚙️ Backend Inferred Parameters (Historical Trend, Seasonality & Context)", expanded=True):
+                    st.caption(f"📌 **Trend Source:** {source_desc}")
+                    bp1, bp2, bp3 = st.columns(3)
+                    with bp1:
+                        st.markdown("**💰 Market Baseline (Trend)**")
+                        st.metric("Modal Price Baseline", f"₹{modal_price:.0f}")
+                        st.caption(f"Min: ₹{min_price:.0f} | Max: ₹{max_price:.0f} | Spread: ₹{max_price - min_price:.0f}")
+                    with bp2:
+                        st.markdown("**🌤️ Weather (Seasonal Trend)**")
+                        st.metric("Max Temperature", f"{max_temp:.1f} °C")
+                        st.metric("24h Rainfall", f"{rainfall:.1f} mm")
+                        if rainfall > 15:
+                            st.caption("⚠️ Rainfall elevated by severe weather news signal")
+                        else:
+                            st.caption("✅ Normal seasonal weather for Gujarat")
+                    with bp3:
+                        st.markdown("**📦 Supply & Mandi Metrics**")
+                        st.metric("Active Mandis Reporting", f"{active_mandis}")
+                        st.metric("Est. Arrival Volume", f"{arrival_volume:.0f} Tonnes")
+                        st.caption("Estimated from reporting mandis & market state")
+
                 st.subheader("🎯 Prediction Results")
                 
                 # Main metrics
